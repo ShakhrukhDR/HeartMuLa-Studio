@@ -60,8 +60,10 @@ VRAM_THRESHOLD_QUANTIZED_NO_SWAP = 14.0  # Can fit 4-bit HeartMuLa (~3GB) + Hear
 VRAM_THRESHOLD_QUANTIZED_WITH_SWAP = 10.0  # Can fit 4-bit HeartMuLa (~3GB) + KV cache (~4GB), then swap for codec
 VRAM_MINIMUM = 8.0  # Absolute minimum to run at all
 
-# Default model cache directory
-DEFAULT_MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "models")
+# Model directory - configurable via HEARTMULA_MODEL_DIR env var
+# Allows users to point to existing models (e.g., ComfyUI shared models)
+_default_model_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "models")
+DEFAULT_MODEL_DIR = os.environ.get("HEARTMULA_MODEL_DIR", _default_model_dir)
 
 
 def detect_optimal_gpu_config() -> dict:

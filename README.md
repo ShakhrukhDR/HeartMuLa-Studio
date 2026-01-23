@@ -197,6 +197,10 @@ Override settings in `docker-compose.yml`:
 environment:
   - HEARTMULA_4BIT=true                  # Force 4-bit quantization
   - HEARTMULA_SEQUENTIAL_OFFLOAD=true    # Force model swapping (low VRAM)
+
+volumes:
+  # Use existing models from another location (e.g., ComfyUI)
+  - /path/to/comfyui/models/heartmula:/app/backend/models
 ```
 
 ## Prerequisites
@@ -293,10 +297,16 @@ OLLAMA_HOST=http://localhost:11434
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `HEARTMULA_MODEL_DIR` | `backend/models` | Custom model directory (share with ComfyUI, etc.) |
 | `HEARTMULA_4BIT` | `auto` | 4-bit quantization: `auto`, `true`, or `false` |
 | `HEARTMULA_SEQUENTIAL_OFFLOAD` | `auto` | Model swapping for low VRAM: `auto`, `true`, or `false` |
 | `HEARTMULA_VERSION` | `RL-3B-20260123` | Model version (latest RL-tuned model) |
 | `CUDA_VISIBLE_DEVICES` | all GPUs | Specify which GPUs to use (e.g., `0,1`) |
+
+**Example: Use existing models from ComfyUI:**
+```bash
+HEARTMULA_MODEL_DIR=/path/to/comfyui/models/heartmula ./start.sh
+```
 
 ### GPU Auto-Configuration
 
