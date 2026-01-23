@@ -30,10 +30,23 @@ engine = create_engine(sqlite_url)
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
 
+def run_migrations():
+    """Run simple database migrations for new columns."""
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        # Add generation_time_seconds column if it doesn't exist
+        try:
+            conn.execute(text("ALTER TABLE job ADD COLUMN generation_time_seconds REAL"))
+            conn.commit()
+            print("[Migration] Added generation_time_seconds column to job table")
+        except Exception:
+            pass  # Column already exists
+
 # Lifespan
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     create_db_and_tables()
+    run_migrations()
     # Initialize Heartlib (Non-blocking usually, but loading big models might take a sec)
     # We trigger it but don't await strictly if we want faster startup, 
     # but for safety we await to ensure model is ready before traffic.

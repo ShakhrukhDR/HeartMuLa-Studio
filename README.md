@@ -88,13 +88,43 @@
 | **AI Engine** | [HeartLib](https://github.com/HeartMuLa/heartlib) - MuQ, MuLan, HeartCodec |
 | **LLM Integration** | Ollama, OpenRouter |
 
+## Performance Optimizations
+
+HeartMuLa Studio includes several optimizations for faster generation and lower VRAM usage:
+
+### 🚀 4-bit Quantization
+Reduces VRAM usage from **~11GB to ~3GB** using BitsAndBytes NF4 quantization:
+```bash
+HEARTMULA_4BIT=true python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
+```
+
+### ⚡ Flash Attention
+Automatically configured based on your GPU:
+| GPU | Flash Attention |
+|-----|-----------------|
+| NVIDIA SM 7.0+ (Volta, Turing, Ampere, Ada, Hopper) | ✅ Enabled |
+| NVIDIA SM 6.x and older (Pascal, Maxwell) | ❌ Disabled (uses math backend) |
+| AMD GPUs | ❌ Disabled (compatibility varies) |
+
+### 🎯 Smart Multi-GPU Detection
+Automatically selects the best GPU configuration:
+- **With 4-bit quantization**: Prioritizes fastest GPU (highest compute capability)
+- **Without quantization**: Prioritizes GPU with most VRAM
+- HeartMuLa → Primary GPU, HeartCodec → Secondary GPU
+
+### 📥 Auto-Download
+Models are automatically downloaded from HuggingFace Hub on first run (~5GB):
+- HeartMuLa (main model)
+- HeartCodec (audio decoder)
+- Tokenizer and generation config
+
 ## Prerequisites
 
 - **Python** 3.10 or higher
 - **Node.js** 18 or higher
 - **CUDA GPU(s)**:
-  - Multi-GPU: 2x 12GB+ GPUs (e.g., 2x RTX 3060/4070)
-  - Single GPU: 24GB+ (e.g., RTX 3090/4090) or 16GB with lazy loading
+  - **With 4-bit quantization**: 6GB+ VRAM (e.g., RTX 3060, RTX 4060)
+  - **Without quantization**: 12GB+ per GPU or 24GB single GPU
 - **Git** for cloning the repository
 
 ## Installation
@@ -180,23 +210,39 @@ OPENROUTER_API_KEY=your_api_key_here
 OLLAMA_HOST=http://localhost:11434
 ```
 
+**HeartMuLa Configuration (set when running):**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HEARTMULA_4BIT` | `false` | Enable 4-bit quantization (~3GB VRAM instead of ~11GB) |
+| `HEARTMULA_VERSION` | `RL-3B-20260123` | Model version (latest RL-tuned model) |
+| `CUDA_VISIBLE_DEVICES` | all GPUs | Specify which GPUs to use (e.g., `0,1`) |
+
 ### GPU Configuration
 
 HeartMuLa Studio automatically detects available GPUs and distributes the model:
 
 | Setup | VRAM Required | Configuration |
 |-------|---------------|---------------|
-| **Multi-GPU (Recommended)** | 12GB + 12GB | HeartMuLa on GPU 0, HeartCodec on GPU 1 |
+| **4-bit Quantization (Recommended)** | 6GB+ | ~3GB VRAM, runs on most modern GPUs |
+| **Multi-GPU** | 12GB + 12GB | HeartMuLa on GPU 0, HeartCodec on GPU 1 |
 | **Single GPU (High VRAM)** | 24GB+ | Both models on same GPU |
-| **Single GPU (Low VRAM)** | 16GB | Lazy loading - codec on CPU, loaded on demand |
+| **Single GPU (Low VRAM)** | 16GB | Lazy loading - codec on CPU |
 
-**Multi-GPU Setup (Best Performance):**
+**Recommended Setup (4-bit Quantization):**
+```bash
+HEARTMULA_4BIT=true python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
+```
+
+**Multi-GPU Setup:**
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 ```
 
-**Single GPU / Low VRAM Setup:**
-The backend automatically uses lazy loading when only one GPU is detected. HeartCodec stays on CPU and is loaded to GPU only during audio decoding, then released.
+**Combined (4-bit + Multi-GPU):**
+```bash
+HEARTMULA_4BIT=true CUDA_VISIBLE_DEVICES=0,1 python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
+```
 
 **Memory Optimization:**
 ```bash

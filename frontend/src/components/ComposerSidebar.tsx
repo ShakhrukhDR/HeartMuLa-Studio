@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, ChevronUp, Sparkles, RotateCcw, Wand2, ArrowRightCircle, RefreshCw, Clock, Sliders, Music, Upload, X, FileAudio, Play, Dices, Copy, Scissors } from 'lucide-react';
+import { ChevronDown, ChevronUp, Sparkles, RotateCcw, Wand2, ArrowRightCircle, RefreshCw, Clock, Sliders, Music, Upload, X, FileAudio, Play, Dices, Copy, Scissors, Timer } from 'lucide-react';
 
 import { api, type Job, type LLMModel } from '../api';
 import { RefAudioRegionModal } from './RefAudioRegionModal';
@@ -26,6 +26,7 @@ interface ComposerSidebarProps {
     previewPlaybackState?: PreviewPlaybackState;
     onPreviewSeek?: (time: number) => void;
     onPreviewPlayPause?: () => void;
+    lastGenerationTime?: number;
 }
 
 export interface CompositionData {
@@ -67,7 +68,8 @@ export const ComposerSidebar: React.FC<ComposerSidebarProps> = ({
     onClearPreviewAudio,
     previewPlaybackState,
     onPreviewSeek,
-    onPreviewPlayPause
+    onPreviewPlayPause,
+    lastGenerationTime
 }) => {
     const [topic, setTopic] = useState('');
     const [style, setStyle] = useState('');
@@ -208,8 +210,9 @@ export const ComposerSidebar: React.FC<ComposerSidebarProps> = ({
         if (!topic || !currentModel) return;
         setIsEnhancing(true);
         try {
-            const seed = lyrics.trim();
-            const result = await onGenerateLyrics(topic, currentModel.id, currentModel.provider, selectedLanguage, seed);
+            // Don't pass existing lyrics as seed - generate fresh each time
+            // This way clicking the wand always generates new lyrics instead of "continuing" existing ones
+            const result = await onGenerateLyrics(topic, currentModel.id, currentModel.provider, selectedLanguage);
             // Always update with AI-generated content
             if (result.lyrics) {
                 setLyrics(result.lyrics);
@@ -979,6 +982,23 @@ export const ComposerSidebar: React.FC<ComposerSidebarProps> = ({
             <div className={`p-4 border-t shrink-0 space-y-2 ${
                 darkMode ? 'bg-[#181818] border-[#282828]' : 'bg-white border-slate-100'
             }`}>
+                {/* Last Generation Time */}
+                {lastGenerationTime && (
+                    <div className={`flex items-center justify-center gap-2 py-1.5 rounded-md ${
+                        darkMode ? 'bg-[#282828] text-[#b3b3b3]' : 'bg-slate-50 text-slate-500'
+                    }`}>
+                        <Timer className="w-3.5 h-3.5" />
+                        <span className="text-xs">
+                            Last track generated in{' '}
+                            <span className={darkMode ? 'text-[#1DB954] font-medium' : 'text-cyan-600 font-medium'}>
+                                {lastGenerationTime >= 60
+                                    ? `${Math.floor(lastGenerationTime / 60)}m ${Math.round(lastGenerationTime % 60)}s`
+                                    : `${Math.round(lastGenerationTime)}s`
+                                }
+                            </span>
+                        </span>
+                    </div>
+                )}
                 {isGenerating && currentJobId && onCancel && (
                     <button
                         onClick={() => onCancel(currentJobId)}

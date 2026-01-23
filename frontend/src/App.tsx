@@ -434,6 +434,7 @@ function App() {
                 previewPlaybackState={previewAudio ? previewPlaybackState : undefined}
                 onPreviewSeek={handlePreviewSeek}
                 onPreviewPlayPause={handlePreviewPlayPause}
+                lastGenerationTime={(playingTrack || lastCompletedTrack)?.generation_time_seconds}
               />
             </div>
           </aside>
@@ -473,6 +474,7 @@ function App() {
                 previewPlaybackState={previewAudio ? previewPlaybackState : undefined}
                 onPreviewSeek={handlePreviewSeek}
                 onPreviewPlayPause={handlePreviewPlayPause}
+                lastGenerationTime={(playingTrack || lastCompletedTrack)?.generation_time_seconds}
               />
             </aside>
           </div>

@@ -4,7 +4,7 @@ import gc
 import torch
 import torchaudio
 import logging
-from typing import Optional, Callable
+from typing import Optional, Callable, Union, Dict
 from tqdm import tqdm
 from backend.app.models import GenerationRequest, Job, JobStatus
 from sqlmodel import Session, select
@@ -13,7 +13,136 @@ from heartlib.heartmula.modeling_heartmula import HeartMuLa
 from heartlib.heartcodec.modeling_heartcodec import HeartCodec
 from tokenizers import Tokenizer
 
+# Optional: 4-bit quantization support
+try:
+    from transformers import BitsAndBytesConfig
+    QUANTIZATION_AVAILABLE = True
+except ImportError:
+    QUANTIZATION_AVAILABLE = False
+
+# HuggingFace Hub for auto-downloading models
+try:
+    from huggingface_hub import hf_hub_download, snapshot_download
+    HF_HUB_AVAILABLE = True
+except ImportError:
+    HF_HUB_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
+
+# HuggingFace model IDs (base repos - version is appended for HeartMuLa)
+HF_HEARTCODEC_REPO = "HeartMuLa/HeartCodec-oss"
+HF_HEARTMULA_GEN_REPO = "HeartMuLa/HeartMuLaGen"  # Contains tokenizer.json and gen_config.json
+
+# Model version mapping - maps version to (HuggingFace repo, local folder name)
+# Local folder name must match heartlib's expected format: HeartMuLa-oss-{version}
+MODEL_VERSIONS = {
+    "3B": ("HeartMuLa/HeartMuLa-oss-3B", "HeartMuLa-oss-3B"),
+    "RL-3B-20260123": ("HeartMuLa/HeartMuLa-RL-oss-3B-20260123", "HeartMuLa-oss-RL-3B-20260123"),
+}
+
+# Default version to use - latest RL-tuned model for best quality
+DEFAULT_VERSION = os.environ.get("HEARTMULA_VERSION", "RL-3B-20260123")
+
+# Configuration: Enable 4-bit quantization for lower VRAM usage
+# Set to True to use ~3GB instead of ~11GB for HeartMuLa
+ENABLE_4BIT_QUANTIZATION = os.environ.get("HEARTMULA_4BIT", "false").lower() == "true"
+
+# Default model cache directory
+DEFAULT_MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "models")
+
+
+def ensure_models_downloaded(model_dir: str = DEFAULT_MODEL_DIR, version: str = None) -> str:
+    """
+    Ensure HeartMuLa models are downloaded. Downloads from HuggingFace Hub if not present.
+
+    Args:
+        model_dir: Directory to store/find models
+        version: Model version (e.g., "3B", "RL-3B-20260123"). If None, uses DEFAULT_VERSION.
+
+    Returns the path to the model directory.
+    """
+    if version is None:
+        version = DEFAULT_VERSION
+
+    os.makedirs(model_dir, exist_ok=True)
+
+    # Get HuggingFace repo ID and local folder name for this version
+    if version in MODEL_VERSIONS:
+        hf_repo, folder_name = MODEL_VERSIONS[version]
+    else:
+        # Fallback: assume version is the folder suffix
+        hf_repo = f"HeartMuLa/HeartMuLa-oss-{version}"
+        folder_name = f"HeartMuLa-oss-{version}"
+
+    heartmula_path = os.path.join(model_dir, folder_name)
+    heartcodec_path = os.path.join(model_dir, "HeartCodec-oss")
+    tokenizer_path = os.path.join(model_dir, "tokenizer.json")
+    gen_config_path = os.path.join(model_dir, "gen_config.json")
+
+    all_present = (
+        os.path.exists(heartmula_path) and
+        os.path.exists(heartcodec_path) and
+        os.path.isfile(tokenizer_path) and
+        os.path.isfile(gen_config_path)
+    )
+
+    if all_present:
+        logger.info(f"All models found at {model_dir}")
+        print(f"[Models] All models found at {model_dir}", flush=True)
+        return model_dir
+
+    if not HF_HUB_AVAILABLE:
+        raise RuntimeError(
+            "Models not found and huggingface_hub is not installed. "
+            "Please install it with: pip install huggingface_hub\n"
+            "Or manually download models to: " + model_dir
+        )
+
+    print(f"[Models] Downloading models from HuggingFace Hub to {model_dir}...", flush=True)
+    print(f"[Models] This may take a while on first run (~5GB download)...", flush=True)
+
+    # Download HeartMuLa model
+    if not os.path.exists(heartmula_path):
+        print(f"[Models] Downloading {hf_repo}...", flush=True)
+        snapshot_download(
+            repo_id=hf_repo,
+            local_dir=heartmula_path,
+            local_dir_use_symlinks=False,
+        )
+        print(f"[Models] {folder_name} downloaded.", flush=True)
+
+    # Download HeartCodec model
+    if not os.path.exists(heartcodec_path):
+        print(f"[Models] Downloading HeartCodec-oss...", flush=True)
+        snapshot_download(
+            repo_id=HF_HEARTCODEC_REPO,
+            local_dir=heartcodec_path,
+            local_dir_use_symlinks=False,
+        )
+        print(f"[Models] HeartCodec-oss downloaded.", flush=True)
+
+    # Download tokenizer and gen_config from HeartMuLaGen repo
+    if not os.path.isfile(tokenizer_path):
+        print(f"[Models] Downloading tokenizer.json...", flush=True)
+        hf_hub_download(
+            repo_id=HF_HEARTMULA_GEN_REPO,
+            filename="tokenizer.json",
+            local_dir=model_dir,
+            local_dir_use_symlinks=False,
+        )
+
+    if not os.path.isfile(gen_config_path):
+        print(f"[Models] Downloading gen_config.json...", flush=True)
+        hf_hub_download(
+            repo_id=HF_HEARTMULA_GEN_REPO,
+            filename="gen_config.json",
+            local_dir=model_dir,
+            local_dir_use_symlinks=False,
+        )
+
+    print(f"[Models] All models downloaded successfully!", flush=True)
+    logger.info(f"Models downloaded to {model_dir}")
+    return model_dir
 
 
 def configure_flash_attention_for_gpu(device_id: int):
@@ -71,16 +200,92 @@ def configure_flash_attention_for_gpu(device_id: int):
             pass
 
 
+def create_quantized_pipeline(
+    model_path: str,
+    version: str,
+    mula_device: torch.device,
+    codec_device: torch.device,
+) -> HeartMuLaGenPipeline:
+    """
+    Create a HeartMuLa pipeline with 4-bit quantization for reduced VRAM usage.
+    Uses BitsAndBytes NF4 quantization to reduce model size from ~11GB to ~3GB.
+    """
+    from heartlib.pipelines.music_generation import _resolve_paths
+
+    mula_path, codec_path, tokenizer_path, gen_config_path = _resolve_paths(model_path, version)
+    tokenizer = Tokenizer.from_file(tokenizer_path)
+    gen_config = HeartMuLaGenConfig.from_file(gen_config_path)
+
+    # Create 4-bit quantization config
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_use_double_quant=True,
+    )
+
+    print(f"[Quantization] Loading HeartMuLa with 4-bit NF4 quantization...", flush=True)
+
+    # Load HeartMuLa with quantization
+    heartmula = HeartMuLa.from_pretrained(
+        mula_path,
+        device_map=mula_device,
+        torch_dtype=torch.bfloat16,
+        quantization_config=bnb_config,
+    )
+
+    # Load HeartCodec normally (it's smaller, no need for quantization)
+    heartcodec = HeartCodec.from_pretrained(
+        codec_path,
+        device_map=codec_device,
+        dtype=torch.float32,
+    )
+
+    print(f"[Quantization] Models loaded. HeartMuLa VRAM reduced by ~4x.", flush=True)
+
+    # Create pipeline with lazy_load=True to avoid double loading
+    # Then inject our pre-loaded quantized models
+    pipeline = HeartMuLaGenPipeline(
+        heartmula_path=mula_path,
+        heartcodec_path=codec_path,
+        heartmula_device=mula_device,
+        heartcodec_device=codec_device,
+        heartmula_dtype=torch.bfloat16,
+        heartcodec_dtype=torch.float32,
+        lazy_load=True,  # Don't load models in __init__
+        muq_mulan=None,
+        text_tokenizer=tokenizer,
+        config=gen_config,
+    )
+
+    # Inject the pre-loaded quantized models
+    pipeline._mula = heartmula
+    pipeline._codec = heartcodec
+    pipeline.lazy_load = False  # Prevent unloading after generation
+
+    return pipeline
+
+
 def patch_pipeline_with_callback(pipeline: HeartMuLaGenPipeline):
     """
     Monkey-patch the HeartMuLa pipeline to support progress callbacks.
     This allows us to report generation progress without modifying upstream heartlib.
-    """
-    original_forward = pipeline._forward
 
-    def patched_forward(model_inputs, max_audio_length_ms, temperature, topk, cfg_scale,
-                        callback: Optional[Callable] = None, **kwargs):
-        """Patched _forward method that supports progress callback."""
+    We store a custom generate method on the pipeline instance that handles callbacks.
+    """
+
+    def generate_with_callback(inputs, callback=None, **kwargs):
+        """Custom generate method that supports progress callback."""
+        cfg_scale = kwargs.get("cfg_scale", 1.5)
+        max_audio_length_ms = kwargs.get("max_audio_length_ms", 120_000)
+        temperature = kwargs.get("temperature", 1.0)
+        topk = kwargs.get("topk", 50)
+        save_path = kwargs.get("save_path", "output.mp3")
+
+        # Preprocess
+        model_inputs = pipeline.preprocess(inputs, cfg_scale=cfg_scale)
+
+        # Forward with progress callback
         prompt_tokens = model_inputs["tokens"].to(pipeline.mula_device)
         prompt_tokens_mask = model_inputs["tokens_mask"].to(pipeline.mula_device)
         continuous_segment = model_inputs["muq_embed"].to(pipeline.mula_device)
@@ -147,32 +352,16 @@ def patch_pipeline_with_callback(pipeline: HeartMuLaGenPipeline):
 
         frames = torch.stack(frames).permute(1, 2, 0).squeeze(0)
         pipeline._unload()
-        return {"frames": frames}
 
-    # Replace the method
-    pipeline._forward = patched_forward
+        # Postprocess
+        model_outputs = {"frames": frames}
+        frames_for_codec = model_outputs["frames"].to(pipeline.codec_device)
+        wav = pipeline.codec.detokenize(frames_for_codec)
+        pipeline._unload()
+        torchaudio.save(save_path, wav.to(torch.float32).cpu(), 48000)
 
-    # Also patch __call__ to pass callback through
-    original_call = pipeline.__call__
-
-    def patched_call(inputs, callback=None, **kwargs):
-        preprocess_kwargs = {"cfg_scale": kwargs.get("cfg_scale", 1.5)}
-        forward_kwargs = {
-            "max_audio_length_ms": kwargs.get("max_audio_length_ms", 120_000),
-            "temperature": kwargs.get("temperature", 1.0),
-            "topk": kwargs.get("topk", 50),
-            "cfg_scale": kwargs.get("cfg_scale", 1.5),
-            "callback": callback,
-        }
-        postprocess_kwargs = {
-            "save_path": kwargs.get("save_path", "output.mp3"),
-        }
-
-        model_inputs = pipeline.preprocess(inputs, **preprocess_kwargs)
-        model_outputs = pipeline._forward(model_inputs, **forward_kwargs)
-        pipeline.postprocess(model_outputs, **postprocess_kwargs)
-
-    pipeline.__call__ = patched_call
+    # Store the custom method on the pipeline instance
+    pipeline.generate_with_callback = generate_with_callback
 
     logger.info("[Pipeline] Patched HeartMuLa pipeline with callback support")
     print("[Pipeline] Patched HeartMuLa pipeline with callback support", flush=True)
@@ -224,28 +413,40 @@ class MusicService:
     def _load_pipeline_multi_gpu(self, model_path: str, version: str):
         """Load pipeline with multi-GPU support using new dict-based device/dtype API."""
         num_gpus = torch.cuda.device_count()
+        use_quantization = ENABLE_4BIT_QUANTIZATION and QUANTIZATION_AVAILABLE
+
+        if use_quantization:
+            print(f"[Quantization] 4-bit quantization ENABLED - model will use ~3GB instead of ~11GB", flush=True)
 
         if num_gpus < 2:
-            logger.info(f"Found {num_gpus} GPU(s). Using single GPU mode with lazy loading...")
+            logger.info(f"Found {num_gpus} GPU(s). Using single GPU mode...")
             self.gpu_mode = "single"
 
             # Configure Flash Attention for the GPU
             configure_flash_attention_for_gpu(0)
 
-            # Single GPU: Use lazy loading - codec stays on CPU until decode time
-            pipeline = HeartMuLaGenPipeline.from_pretrained(
-                model_path,
-                device={
-                    "mula": torch.device("cuda"),
-                    "codec": torch.device("cpu"),
-                },
-                dtype={
-                    "mula": torch.bfloat16,
-                    "codec": torch.float32,
-                },
-                version=version,
-                lazy_load=True,
-            )
+            if use_quantization:
+                # With quantization, model fits easily - use GPU for both
+                pipeline = create_quantized_pipeline(
+                    model_path, version,
+                    mula_device=torch.device("cuda"),
+                    codec_device=torch.device("cuda"),
+                )
+            else:
+                # Without quantization, use lazy loading - codec stays on CPU
+                pipeline = HeartMuLaGenPipeline.from_pretrained(
+                    model_path,
+                    device={
+                        "mula": torch.device("cuda"),
+                        "codec": torch.device("cpu"),
+                    },
+                    dtype={
+                        "mula": torch.bfloat16,
+                        "codec": torch.float32,
+                    },
+                    version=version,
+                    lazy_load=True,
+                )
             return patch_pipeline_with_callback(pipeline)
 
         # Multi-GPU setup
@@ -258,12 +459,18 @@ class MusicService:
             gpu_info[i] = {"mem": mem, "compute": compute_cap, "name": props.name}
             logger.info(f"  GPU {i}: {props.name} ({mem:.1f} GB, SM {props.major}.{props.minor})")
 
-        # Put HeartMuLa on GPU with most VRAM (needs ~11GB for 3B model)
-        # HeartCodec goes on the other GPU
-        mula_gpu = max(gpu_info, key=lambda x: gpu_info[x]["mem"])
-        codec_gpu = min(gpu_info, key=lambda x: gpu_info[x]["mem"])
+        if use_quantization:
+            # With quantization: prioritize compute capability (faster GPU)
+            # since the quantized model only needs ~3GB
+            mula_gpu = max(gpu_info, key=lambda x: gpu_info[x]["compute"])
+            codec_gpu = min(gpu_info, key=lambda x: gpu_info[x]["compute"])
+            print(f"[GPU Setup] Using fastest GPU for HeartMuLa (4-bit quantization enabled)", flush=True)
+        else:
+            # Without quantization: prioritize VRAM (model needs ~11GB)
+            mula_gpu = max(gpu_info, key=lambda x: gpu_info[x]["mem"])
+            codec_gpu = min(gpu_info, key=lambda x: gpu_info[x]["mem"])
 
-        print(f"[GPU Setup] HeartMuLa -> GPU {mula_gpu}: {gpu_info[mula_gpu]['name']} ({gpu_info[mula_gpu]['mem']:.1f} GB)", flush=True)
+        print(f"[GPU Setup] HeartMuLa -> GPU {mula_gpu}: {gpu_info[mula_gpu]['name']} ({gpu_info[mula_gpu]['mem']:.1f} GB, SM {gpu_info[mula_gpu]['compute']})", flush=True)
         print(f"[GPU Setup] HeartCodec -> GPU {codec_gpu}: {gpu_info[codec_gpu]['name']} ({gpu_info[codec_gpu]['mem']:.1f} GB)", flush=True)
 
         # Configure Flash Attention based on the GPU running HeartMuLa
@@ -271,37 +478,57 @@ class MusicService:
 
         self.gpu_mode = "multi"
 
-        pipeline = HeartMuLaGenPipeline.from_pretrained(
-            model_path,
-            device={
-                "mula": torch.device(f"cuda:{mula_gpu}"),
-                "codec": torch.device(f"cuda:{codec_gpu}"),
-            },
-            dtype={
-                "mula": torch.bfloat16,
-                "codec": torch.float32,
-            },
-            version=version,
-        )
+        if use_quantization:
+            pipeline = create_quantized_pipeline(
+                model_path, version,
+                mula_device=torch.device(f"cuda:{mula_gpu}"),
+                codec_device=torch.device(f"cuda:{codec_gpu}"),
+            )
+        else:
+            pipeline = HeartMuLaGenPipeline.from_pretrained(
+                model_path,
+                device={
+                    "mula": torch.device(f"cuda:{mula_gpu}"),
+                    "codec": torch.device(f"cuda:{codec_gpu}"),
+                },
+                dtype={
+                    "mula": torch.bfloat16,
+                    "codec": torch.float32,
+                },
+                version=version,
+            )
         return patch_pipeline_with_callback(pipeline)
 
-    async def initialize(self, model_path: str = "HeartMuLa", version: str = "3B"):
+    async def initialize(self, model_path: Optional[str] = None, version: str = None):
         if self.pipeline is not None or self.is_loading:
             return
 
         self.is_loading = True
 
+        # Use default version if not specified
+        if version is None:
+            version = DEFAULT_VERSION
+        logger.info(f"Using HeartMuLa version: {version}")
+
         # Clean up GPU memory before loading
         logger.info("Cleaning up GPU memory before loading...")
         cleanup_gpu_memory()
 
+        # Auto-download models if not present
+        loop = asyncio.get_running_loop()
+        if model_path is None:
+            logger.info("Checking for models and downloading if needed...")
+            model_path = await loop.run_in_executor(
+                None,
+                lambda v=version: ensure_models_downloaded(DEFAULT_MODEL_DIR, v)
+            )
+
         logger.info(f"Loading Heartlib model from {model_path}...")
         try:
             # Run blocking load in executor to avoid freezing async loop
-            loop = asyncio.get_running_loop()
             self.pipeline = await loop.run_in_executor(
                 None,
-                lambda: self._load_pipeline_multi_gpu(model_path, version)
+                lambda mp=model_path, v=version: self._load_pipeline_multi_gpu(mp, v)
             )
             logger.info(f"Heartlib model loaded successfully in {self.gpu_mode}-GPU mode.")
         except Exception as e:
@@ -333,6 +560,9 @@ class MusicService:
             logger.info(f"Starting generation for job {job_id_str}")
 
             # 2. Update status to PROCESSING
+            import time
+            generation_start_time = time.time()
+
             try:
                 with Session(db_engine) as session:
                     # check if job still exists
@@ -467,7 +697,7 @@ class MusicService:
                             pipeline_inputs["negative_tags"] = request.negative_tags
                             print(f"[DEBUG] Using negative_tags: {request.negative_tags}", flush=True)
 
-                        self.pipeline(
+                        self.pipeline.generate_with_callback(
                             pipeline_inputs,
                             max_audio_length_ms=request.duration_ms,
                             save_path=save_path,
@@ -486,6 +716,8 @@ class MusicService:
                 await loop.run_in_executor(None, _run_pipeline)
 
                 # 6. Update status to COMPLETED
+                generation_time = time.time() - generation_start_time
+
                 with Session(db_engine) as session:
                     job = session.exec(select(Job).where(Job.id == job_id_uuid)).one_or_none()
                     if not job:
@@ -496,6 +728,7 @@ class MusicService:
                     job.audio_path = f"/audio/{output_filename}"
                     job.title = auto_title
                     job.seed = seed_to_use
+                    job.generation_time_seconds = round(generation_time, 1)
                     session.add(job)
                     session.commit()
                     final_audio_path = job.audio_path

@@ -477,16 +477,17 @@ export const HistoryFeed: React.FC<HistoryFeedProps> = ({ history, currentJobId,
             {/* Progress Bar for generating */}
             {(job.status === 'processing' || job.status === 'queued') && (
                 <div className="mt-4">
-                    <div className={`h-1.5 rounded-full overflow-hidden ${darkMode ? 'bg-[#404040]' : 'bg-slate-200'}`}>
-                        <motion.div
-                            className={`h-full rounded-full ${
+                    <div className={`h-2 rounded-full overflow-hidden ${darkMode ? 'bg-[#404040]' : 'bg-slate-200'}`}>
+                        <div
+                            className={`h-full rounded-full transition-all duration-500 ease-linear ${
                                 darkMode
                                     ? 'bg-[#1DB954]'
                                     : 'bg-gradient-to-r from-cyan-500 to-purple-500'
                             }`}
-                            style={{ width: `${Math.min(jobProgress.get(job.id)?.progress || 0, 100)}%` }}
-                            animate={{ width: `${Math.min(jobProgress.get(job.id)?.progress || 0, 100)}%` }}
-                            transition={{ duration: 0.5, ease: 'linear' }}
+                            style={{
+                                width: `${Math.max(Math.min(jobProgress.get(job.id)?.progress || 0, 100), 2)}%`,
+                                minWidth: '8px'
+                            }}
                         />
                     </div>
                     <div className="flex items-center justify-between mt-1.5">

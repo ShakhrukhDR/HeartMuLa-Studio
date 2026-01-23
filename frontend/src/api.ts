@@ -15,6 +15,7 @@ export interface Job {
     created_at: string;
     duration_ms?: number;
     seed?: number;
+    generation_time_seconds?: number;
 }
 
 export interface LLMModel {

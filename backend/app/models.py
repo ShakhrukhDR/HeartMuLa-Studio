@@ -22,6 +22,7 @@ class Job(SQLModel, table=True):
     duration_ms: int = 240000
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     error_msg: Optional[str] = None
+    generation_time_seconds: Optional[float] = None  # Time taken to generate the track
 
 class GenerationRequest(SQLModel):
     model_config = {"protected_namespaces": ()}
