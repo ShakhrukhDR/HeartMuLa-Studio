@@ -1529,7 +1529,7 @@ class MusicService:
 
                     with torch.no_grad():
                         pipeline_inputs = {
-                            "lyrics": request.lyrics,
+                            "lyrics": request.lyrics or "",  # heartlib expects string, not None
                             "tags": sound_tags,
                         }
                         if ref_audio_path:
